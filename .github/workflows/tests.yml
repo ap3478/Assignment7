@@ -1,0 +1,94 @@
+name: CI/CD Pipeline - QR Code Generator
+
+on:
+  push:
+    branches: [ "master" ]
+  pull_request:
+    branches: [ "master" ]
+
+env:
+  IMAGE_NAME: qr-code-generator-app
+  CONTAINER_NAME: qr-generator
+
+jobs:
+  # ──────────────────────────────────────────
+  # JOB 1: Build & Push Docker Image
+  # ──────────────────────────────────────────
+  docker-build:
+    name: Build and Push Docker Image
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to Docker Hub
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKER_USERNAME }}
+          password: ${{ secrets.DOCKER_PASSWORD }}
+
+      - name: Extract Docker metadata (tags & labels)
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ secrets.DOCKER_USERNAME }}/${{ env.IMAGE_NAME }}
+          tags: |
+            type=sha,prefix=sha-
+            type=ref,event=branch
+            type=raw,value=latest,enable=${{ github.ref == 'refs/heads/main' }}
+
+      - name: Build and push Docker image
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+  # ──────────────────────────────────────────
+  # JOB 2: Smoke Test the Docker Container
+  # ──────────────────────────────────────────
+  smoke-test:
+    name: Smoke Test Docker Container
+    runs-on: ubuntu-latest
+    needs: docker-build  # Only runs after image is built
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Pull the built image
+        run: |
+          docker pull ${{ secrets.DOCKER_USERNAME }}/${{ env.IMAGE_NAME }}:latest
+
+      - name: Run container and generate QR code
+        run: |
+          mkdir -p ./qr_codes
+          docker run --rm \
+            --name ${{ env.CONTAINER_NAME }} \
+            -v $(pwd)/qr_codes:/app/qr_codes \
+            ${{ secrets.DOCKER_USERNAME }}/${{ env.IMAGE_NAME }}:latest \
+            --url http://www.njit.edu
+
+      - name: Verify QR code file was generated
+        run: |
+          echo "Checking for generated QR code files..."
+          ls -lh ./qr_codes/
+          if [ -z "$(ls -A ./qr_codes/)" ]; then
+            echo "ERROR: No QR code files were generated!"
+            exit 1
+          else
+            echo "SUCCESS: QR code generated successfully."
+          fi
+
+      - name: Upload generated QR code as artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: generated-qr-codes
+          path: ./qr_codes/
